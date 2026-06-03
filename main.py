@@ -5,28 +5,23 @@ import httpx
 import os
 import sqlite3
 import secrets
-import hashlib
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from typing import Optional
-import json
 
 load_dotenv()
 
 app = FastAPI(title="Number Info API")
 security = HTTPBasic()
 
-# Admin credentials from env
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
-# Internal API configuration
 INTERNAL_PRIMARY_API = "https://number-to-api-team-only.vercel.app/api/index.js"
 INTERNAL_PRIMARY_KEY = "team6months"
 INTERNAL_BACKUP_API = "https://noobster-api-5xii.onrender.com/search"
 INTERNAL_BACKUP_KEY = "mr_noobster"
 
-# ─── DATABASE SETUP ───────────────────────────────────────────────────────────
+# ─── DATABASE ─────────────────────────────────────────────────────────────────
 
 def get_db():
     conn = sqlite3.connect("apikeys.db", check_same_thread=False)
@@ -75,8 +70,7 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
 # ─── KEY HELPERS ──────────────────────────────────────────────────────────────
 
 def generate_key(prefix="hm"):
-    rand = secrets.token_hex(16)
-    return f"{prefix}_{rand}"
+    return f"{prefix}_{secrets.token_hex(16)}"
 
 def validate_api_key(key: str):
     conn = get_db()
@@ -99,27 +93,54 @@ def increment_usage(key: str, number: str, status: str, ip: str = ""):
     conn.commit()
     conn.close()
 
+def get_key_info(row) -> dict:
+    used = row["used_requests"] + 1  # +1 since increment happens after this
+    max_req = row["max_requests"]
+    expires_at = row["expires_at"]
+
+    if max_req == -1:
+        limit_info = {
+            "requests_used": used,
+            "requests_limit": "unlimited",
+            "requests_remaining": "unlimited"
+        }
+    else:
+        limit_info = {
+            "requests_used": used,
+            "requests_limit": max_req,
+            "requests_remaining": max(0, max_req - used)
+        }
+
+    expiry_info = {
+        "expires_at": "never",
+        "is_expired": False
+    }
+    if expires_at:
+        expiry_dt = datetime.fromisoformat(expires_at)
+        expiry_info["expires_at"] = expiry_dt.strftime("%d %b %Y, %I:%M %p")
+        expiry_info["is_expired"] = expiry_dt < datetime.now()
+
+    return {"key_info": {**limit_info, **expiry_info}}
+
 # ─── INTERNAL API LOGIC ───────────────────────────────────────────────────────
 
 def transform_to_unified_format(data: dict, number: str, source: str) -> dict:
     if source == "primary":
-        results = data.get("results", [])
         return {
             "status": "success",
             "developer": "@helper_man",
             "queried_number": number,
             "timestamp": datetime.now().isoformat() + "Z",
-            "results": results
+            "results": data.get("results", [])
         }
     elif source == "backup":
         data_obj = data.get("data", {})
-        results = data_obj.get("data", [])
         return {
             "status": "success",
             "developer": "@helper_man",
             "queried_number": number,
             "timestamp": datetime.now().isoformat() + "Z",
-            "results": results
+            "results": data_obj.get("data", [])
         }
     return None
 
@@ -131,8 +152,7 @@ async def fetch_from_internal_primary(number: str):
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "success" and data.get("results"):
-                unified = transform_to_unified_format(data, number, "primary")
-                return {"success": True, "data": unified}
+                return {"success": True, "data": transform_to_unified_format(data, number, "primary")}
             return {"success": False}
         except Exception:
             return {"success": False}
@@ -145,11 +165,8 @@ async def fetch_from_internal_backup(number: str):
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "success" and isinstance(data.get("data"), dict):
-                data_obj = data.get("data", {})
-                results_array = data_obj.get("data", [])
-                if results_array:
-                    unified = transform_to_unified_format(data, number, "backup")
-                    return {"success": True, "data": unified}
+                if data.get("data", {}).get("data", []):
+                    return {"success": True, "data": transform_to_unified_format(data, number, "backup")}
             return {"success": False}
         except Exception:
             return {"success": False}
@@ -177,9 +194,11 @@ async def number_info(
             "key_expired": "Your API key has expired. Contact @helper_man.",
             "limit_exceeded": "Request limit reached for this key. Contact @helper_man."
         }
-        return {"success": False, "error": messages.get(reason, "Unauthorized"), "message": messages.get(reason)}
+        return {"success": False, "error": reason, "message": messages.get(reason)}
 
     ip = request.client.host if request.client else ""
+    key_info = get_key_info(row)
+
     result = await fetch_from_internal_primary(number)
     if not result["success"]:
         result = await fetch_from_internal_backup(number)
@@ -194,10 +213,11 @@ async def number_info(
             "developer": "@helper_man",
             "message": "Service temporarily unavailable. We are working on a fix.",
             "queried_number": number,
-            "timestamp": datetime.now().isoformat() + "Z"
+            "timestamp": datetime.now().isoformat() + "Z",
+            **key_info
         }
 
-    return result["data"]
+    return {**result["data"], **key_info}
 
 @app.get("/")
 async def root():
@@ -274,7 +294,7 @@ async def update_key(
     row = conn.execute("SELECT * FROM api_keys WHERE id=?", (key_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Key not found")
-    
+
     updates = {}
     if label is not None:
         updates["label"] = label
@@ -303,7 +323,7 @@ async def get_stats(admin=Depends(verify_admin)):
     today_requests = conn.execute(
         "SELECT COUNT(*) FROM request_logs WHERE date(timestamp)=date('now')"
     ).fetchone()[0]
-    success_rate_row = conn.execute(
+    success_requests = conn.execute(
         "SELECT COUNT(*) FROM request_logs WHERE status='success'"
     ).fetchone()[0]
     recent_logs = conn.execute(
@@ -315,7 +335,7 @@ async def get_stats(admin=Depends(verify_admin)):
         "active_keys": active_keys,
         "total_requests": total_requests,
         "today_requests": today_requests,
-        "success_requests": success_rate_row,
+        "success_requests": success_requests,
         "recent_logs": [dict(r) for r in recent_logs]
     }
 
