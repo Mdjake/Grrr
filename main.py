@@ -157,7 +157,7 @@ async def fetch_from_internal_primary(number: str):
     url = f"{INTERNAL_PRIMARY_API}?api_key={INTERNAL_PRIMARY_KEY}&number={number}"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(url, timeout=10.0)
+            resp = await client.get(url, timeout=6.0)
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "success" and data.get("results"):
@@ -170,7 +170,7 @@ async def fetch_from_internal_backup(number: str):
     url = f"{INTERNAL_BACKUP_API}?query={number}"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(url, timeout=17.0)
+            resp = await client.get(url, timeout=6.0)
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "success" and data.get("results"):
@@ -183,7 +183,7 @@ async def fetch_from_internal_backup_2(number: str):
     url = f"{INTERNAL_BACKUP_API_2}?mobile={number}&key={INTERNAL_BACKUP_KEY}"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(url, timeout=17.0)
+            resp = await client.get(url, timeout=10.0)
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "success" and isinstance(data.get("data"), dict):
