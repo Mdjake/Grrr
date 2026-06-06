@@ -22,6 +22,9 @@ INTERNAL_BACKUP_API = "https://heated-reconstruction-till-amy.trycloudflare.com/
 INTERNAL_BACKUP_API_2 = "https://noobster-api-5xii.onrender.com/search"
 INTERNAL_BACKUP_KEY = "mr_noobster"
 
+TG_TO_NUM_API = "http://Api.subhxcosmo.in/api"
+TG_TO_NUM_KEY = "KRISHRDP2"
+
 # ─── DATABASE ─────────────────────────────────────────────────────────────────
 
 def get_db():
@@ -49,7 +52,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS request_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             api_key TEXT NOT NULL,
-            number TEXT,
+            endpoint TEXT DEFAULT 'number-info',
+            query_term TEXT,
             status TEXT,
             timestamp TEXT DEFAULT (datetime('now')),
             ip TEXT DEFAULT ''
@@ -87,10 +91,10 @@ def validate_api_key(key: str):
         return None, "limit_exceeded"
     return row, "ok"
 
-def increment_usage(key: str, number: str, status: str, ip: str = ""):
+def increment_usage(key: str, query_term: str, status: str, endpoint: str = "number-info", ip: str = ""):
     conn = get_db()
     conn.execute("UPDATE api_keys SET used_requests=used_requests+1, last_used=datetime('now') WHERE key=?", (key,))
-    conn.execute("INSERT INTO request_logs (api_key, number, status, ip) VALUES (?,?,?,?)", (key, number, status, ip))
+    conn.execute("INSERT INTO request_logs (api_key, endpoint, query_term, status, ip) VALUES (?,?,?,?,?)", (key, endpoint, query_term, status, ip))
     conn.commit()
     conn.close()
 
@@ -123,7 +127,7 @@ def get_key_info(row) -> dict:
 
     return {"key_info": {**limit_info, **expiry_info}}
 
-# ─── INTERNAL API LOGIC ───────────────────────────────────────────────────────
+# ─── INTERNAL API LOGIC (NUMBER TO INFO) ───────────────────────────────────────
 
 def transform_to_unified_format(data: dict, number: str, source: str) -> dict:
     if source == "primary":
@@ -170,7 +174,7 @@ async def fetch_from_internal_backup(number: str):
     url = f"{INTERNAL_BACKUP_API}?query={number}"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(url, timeout=6.0)
+            resp = await client.get(url, timeout=7.0)
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "success" and data.get("results"):
@@ -189,6 +193,30 @@ async def fetch_from_internal_backup_2(number: str):
             if data.get("status") == "success" and isinstance(data.get("data"), dict):
                 if data.get("data", {}).get("data", []):
                     return {"success": True, "data": transform_to_unified_format(data, number, "backup2")}
+            return {"success": False}
+        except Exception:
+            return {"success": False}
+
+# ─── INTERNAL API LOGIC (TELEGRAM TO NUMBER) ───────────────────────────────────
+
+async def fetch_from_tg_to_num(username: str):
+    url = f"{TG_TO_NUM_API}?key={TG_TO_NUM_KEY}&type=tg&term={username}"
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(url, timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success") or data.get("status") == "success":
+                return {
+                    "success": True,
+                    "data": {
+                        "status": "success",
+                        "developer": "@helper_man",
+                        "queried_username": username,
+                        "timestamp": datetime.now().isoformat() + "Z",
+                        "results": data.get("data", data.get("results", []))
+                    }
+                }
             return {"success": False}
         except Exception:
             return {"success": False}
@@ -228,7 +256,7 @@ async def number_info(
         result = await fetch_from_internal_backup_2(number)
 
     status = "success" if result["success"] else "error"
-    increment_usage(apikey, number, status, ip)
+    increment_usage(apikey, number, status, "number-info", ip)
 
     if not result["success"]:
         return {
@@ -243,12 +271,62 @@ async def number_info(
 
     return {**result["data"], **key_info}
 
+@app.get("/api/tg-to-number")
+async def tg_to_number(
+    request: Request,
+    username: str = Query(..., description="Telegram username (with or without @)"),
+    apikey: str = Query(None, description="API key")
+):
+    if not apikey:
+        return {
+            "success": False,
+            "message": "Contact @helper_man on Telegram to get your free API key",
+            "error": "Missing API key"
+        }
+
+    row, reason = validate_api_key(apikey)
+    if not row:
+        messages = {
+            "invalid_key": "Invalid API key. Contact @helper_man on Telegram.",
+            "key_disabled": "Your API key has been disabled. Contact @helper_man.",
+            "key_expired": "Your API key has expired. Contact @helper_man.",
+            "limit_exceeded": "Request limit reached for this key. Contact @helper_man."
+        }
+        return {"success": False, "error": reason, "message": messages.get(reason)}
+
+    ip = request.client.host if request.client else ""
+    key_info = get_key_info(row)
+
+    # Remove @ if present
+    clean_username = username.lstrip("@")
+
+    result = await fetch_from_tg_to_num(clean_username)
+
+    status = "success" if result["success"] else "error"
+    increment_usage(apikey, clean_username, status, "tg-to-number", ip)
+
+    if not result["success"]:
+        return {
+            "status": "error",
+            "success": False,
+            "developer": "@helper_man",
+            "message": "Service temporarily unavailable or username not found.",
+            "queried_username": clean_username,
+            "timestamp": datetime.now().isoformat() + "Z",
+            **key_info
+        }
+
+    return {**result["data"], **key_info}
+
 @app.get("/")
 async def root():
     return {
-        "message": "Number Info API",
+        "message": "Helper Man APIs",
         "developer": "@helper_man",
-        "usage": "/api/number-info?number=7439312179&apikey=YOUR_API_KEY",
+        "endpoints": {
+            "number_info": "/api/number-info?number=7439312179&apikey=YOUR_API_KEY",
+            "tg_to_number": "/api/tg-to-number?username=rocket_xd777&apikey=YOUR_API_KEY"
+        },
         "get_api_key": "Contact @helper_man on Telegram for a free api key",
         "admin_panel": "/admin",
         "status": "active"
@@ -350,6 +428,12 @@ async def get_stats(admin=Depends(verify_admin)):
     success_requests = conn.execute(
         "SELECT COUNT(*) FROM request_logs WHERE status='success'"
     ).fetchone()[0]
+    number_info_requests = conn.execute(
+        "SELECT COUNT(*) FROM request_logs WHERE endpoint='number-info'"
+    ).fetchone()[0]
+    tg_to_number_requests = conn.execute(
+        "SELECT COUNT(*) FROM request_logs WHERE endpoint='tg-to-number'"
+    ).fetchone()[0]
     recent_logs = conn.execute(
         "SELECT * FROM request_logs ORDER BY timestamp DESC LIMIT 20"
     ).fetchall()
@@ -360,6 +444,8 @@ async def get_stats(admin=Depends(verify_admin)):
         "total_requests": total_requests,
         "today_requests": today_requests,
         "success_requests": success_requests,
+        "number_info_requests": number_info_requests,
+        "tg_to_number_requests": tg_to_number_requests,
         "recent_logs": [dict(r) for r in recent_logs]
     }
 
