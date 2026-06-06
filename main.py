@@ -161,7 +161,7 @@ async def fetch_from_internal_primary(number: str):
     url = f"{INTERNAL_PRIMARY_API}?api_key={INTERNAL_PRIMARY_KEY}&number={number}"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(url, timeout=6.0)
+            resp = await client.get(url, timeout=7.0)
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "success" and data.get("results"):
@@ -206,19 +206,29 @@ async def fetch_from_tg_to_num(username: str):
             resp = await client.get(url, timeout=10.0)
             resp.raise_for_status()
             data = resp.json()
-            if data.get("success") or data.get("status") == "success":
-                return {
-                    "success": True,
-                    "data": {
-                        "status": "success",
-                        "developer": "@helper_man",
-                        "queried_username": username,
-                        "timestamp": datetime.now().isoformat() + "Z",
-                        "results": data.get("data", data.get("results", []))
+            
+            # Check if top-level success is true
+            if data.get("success"):
+                result = data.get("result", {})
+                # Check if result also has success
+                if result.get("success"):
+                    return {
+                        "success": True,
+                        "data": {
+                            "status": "success",
+                            "developer": "@helper_man",
+                            "queried_username": username,
+                            "timestamp": datetime.now().isoformat() + "Z",
+                            "tg_id": result.get("tg_id"),
+                            "country": result.get("country"),
+                            "country_code": result.get("country_code"),
+                            "number": result.get("number"),
+                            "msg": result.get("msg")
+                        }
                     }
-                }
             return {"success": False}
-        except Exception:
+        except Exception as e:
+            print(f"Error fetching TG to Number: {str(e)}")
             return {"success": False}
 
 # ─── PUBLIC API ───────────────────────────────────────────────────────────────
